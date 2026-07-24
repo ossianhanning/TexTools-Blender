@@ -2,6 +2,10 @@
 
 TexTools is a free addon for Blender with a set of professional UV and Texture tools. Fully compatible with Blender 3.2 and later, most features should work for Blender versions as old as 2.8, including: UV Layout tools (Align, Rectify, Sort, Randomize...), multiple out-of-the-box Texture Baking modes, Texel Density tools, smart UV Selection operators, Color ID tools and some UV related Mesh creation utilities.
 
+## Blender 5.0 / 5.2 compatibility (this fork) ##
+
+Blender 5.0 removed `BMLoopUV.select` / `.select_edge` from the Python API as part of a UV selection rework, which broke most UV-manipulation tools in upstream TexTools with `AttributeError: 'BMLoopUV' object has no attribute 'select'` (see upstream [#268](https://github.com/franMarz/TexTools-Blender/issues/268) and [#276](https://github.com/franMarz/TexTools-Blender/issues/276)). This fork migrates the affected code to the new `BMLoop.uv_select_vert` / `uv_select_edge` API (plus the required `uv_select_flush_mode()` / `uv_select_sync_to_mesh()` / `uv_select_sync_from_mesh()` calls Blender 5.x needs to keep the bmesh selection cache and the real mesh in sync), and additionally makes UV Sync Selection mode work for Rectify, Straight, Relax, Stitch, and Unwrap, which previously required Sync to be off. Tested against Blender 5.2.0 LTS.
+
 Back in 2009, @renderhjs released the [Original TexTools](http://renderhjs.net/textools/) for 3DS MAX, and later, the Blender add-on, which was discontinued from the 2.79 Blender version until @SavMartin ported it to the 2.8 Blender release.
 
 ## Installation ##

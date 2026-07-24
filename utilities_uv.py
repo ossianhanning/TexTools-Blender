@@ -12,6 +12,26 @@ precision = 5
 multi_object_loop_stop = False
 
 
+def flush_uv_selection(bm):
+	"""uv_select_*_set() only edits the bmesh; call this before any bpy.ops.uv.*
+	operator or bmesh.update_edit_mesh() that needs to see the new selection.
+	uv_select_sync_to_mesh() requires uv_select_sync_valid; a freshly obtained
+	bmesh starts with that unset, and by this point we've already written the
+	full intended selection state ourselves, so it's safe to just mark it valid
+	rather than re-pulling (and clobbering) from the mesh via sync_from_mesh()."""
+	bm.uv_select_sync_valid = True
+	bm.uv_select_flush_mode()
+	bm.uv_select_sync_to_mesh()
+
+
+def ensure_uv_selection_synced(bm):
+	"""Call before reading uv_select_vert/uv_select_edge on a bmesh that may not
+	have had its UV selection cache populated yet (e.g. right after
+	bmesh.from_edit_mesh(), or after a bpy.ops.uv.* call changed selection on
+	the mesh independently of this bm's cache)."""
+	bm.uv_select_sync_from_mesh()
+
+
 def multi_object_loop(func, *args, need_results=False, **kwargs):
 	selected_obs = [ob for ob in bpy.context.selected_objects if ob.type == 'MESH']
 	preactiv_name = None
@@ -80,6 +100,13 @@ def selection_store(bm=None, uv_layers=None, return_selected_UV_faces=False, ret
 		bm = bmesh.from_edit_mesh(bpy.context.active_object.data)
 		uv_layers = bm.loops.layers.uv.verify()
 
+	# Always pull fresh from the mesh: uv_select_sync_valid may already be True
+	# from a previous operator run in this same edit-mode session, but that
+	# doesn't mean our cached selection still matches what the user has since
+	# clicked in the UV editor. selection_store() runs before any writes, so
+	# there's nothing pending to clobber - it's always safe to resync here.
+	ensure_uv_selection_synced(bm)
+
 	settings.use_uv_sync = bpy.context.scene.tool_settings.use_uv_select_sync
 	settings.selection_uv_mode = bpy.context.scene.tool_settings.uv_select_mode
 
@@ -122,7 +149,7 @@ def selection_store(bm=None, uv_layers=None, return_selected_UV_faces=False, ret
 		for loop in face.loops:
 			if loop.edge.seam:
 				settings.seam_edges.add(loop.edge)
-			if loop[uv_layers].select:
+			if loop.uv_select_vert:
 				n_selected_loops += 1
 				settings.selection_uv_loops.add((face.index, loop.vert.index))
 				if return_selected_faces_edges or return_selected_faces_loops:
@@ -188,27 +215,39 @@ def selection_restore(bm=None, uv_layers=None, restore_seams=False):
 		if index < len(bm.faces):
 			bm.faces[index].select = True
 
-	# UV Face-UV Selections (Loops)
-	if contextViewUV:
-		if settings.bversion >= 3.2:
-			with bpy.context.temp_override(**contextViewUV):
-				bpy.ops.uv.select_all(action='DESELECT')
+	# UV Face-UV Selections (Loops) - only meaningful when UV Sync Selection
+	# is off. When synced, UV selection IS mesh selection (no independent
+	# per-loop state), and the mesh vert/edge/face restore above already
+	# fully re-establishes it; redoing it here via select_all(DESELECT) +
+	# per-loop writes would just re-deselect the mesh we just restored,
+	# since per-loop writes don't reliably propagate back to mesh vertex
+	# selection under sync.
+	if not settings.use_uv_sync:
+		if contextViewUV:
+			if settings.bversion >= 3.2:
+				with bpy.context.temp_override(**contextViewUV):
+					bpy.ops.uv.select_all(action='DESELECT')
+			else:
+				bpy.ops.uv.select_all(contextViewUV, action='DESELECT')
+			ensure_uv_selection_synced(bm)
 		else:
-			bpy.ops.uv.select_all(contextViewUV, action='DESELECT')
-	else:
-		for face in bm.faces:
-			for loop in face.loops:
-				loop[uv_layers].select = False
-	for uv_set in settings.selection_uv_loops:
-		for loop in bm.faces[uv_set[0]].loops:
-			if loop.vert.index == uv_set[1]:
-				loop[uv_layers].select = True
-				break
+			for face in bm.faces:
+				for loop in face.loops:
+					loop.uv_select_vert_set(False)
+		for uv_set in settings.selection_uv_loops:
+			for loop in bm.faces[uv_set[0]].loops:
+				if loop.vert.index == uv_set[1]:
+					loop.uv_select_vert_set(True)
+					break
 
-	# Workaround for selection not flushing properly from loops in EDGE or FACE UV Selection Mode,
-	# apparently since UV edge selection support was added to the UV space
-	if settings.selection_uv_mode != "VERTEX":
-		bpy.ops.uv.select_mode(type='VERTEX')
+		# uv_select_vert_set() only touches the bmesh; flush + sync so the mesh
+		# selection data (and thus bpy.ops.uv.* below) sees the new UV selection.
+		flush_uv_selection(bm)
+
+		# Workaround for selection not flushing properly from loops in EDGE or FACE UV Selection Mode,
+		# apparently since UV edge selection support was added to the UV space
+		if settings.selection_uv_mode != "VERTEX":
+			bpy.ops.uv.select_mode(type='VERTEX')
 	bpy.context.scene.tool_settings.uv_select_mode = settings.selection_uv_mode
 
 	bpy.context.view_layer.update()
@@ -305,7 +344,8 @@ def scale_island(island, uv_layer, scale, pivot):
 def set_selected_faces(faces, bm, uv_layers):
 	for face in faces:
 		for loop in face.loops:
-			loop[uv_layers].select = True
+			loop.uv_select_vert_set(True)
+	flush_uv_selection(bm)
 
 
 def get_selected_uvs(bm, uv_layers):
@@ -314,7 +354,7 @@ def get_selected_uvs(bm, uv_layers):
 	for face in bm.faces:
 		if face.select:
 			for loop in face.loops:
-				if loop[uv_layers].select:
+				if loop.uv_select_vert:
 					uvs.add(loop[uv_layers])
 	return uvs
 
@@ -326,7 +366,7 @@ def get_selected_uv_verts(bm, uv_layers, selected=None):
 		for face in bm.faces:
 			if face.select:
 				for loop in face.loops:
-					if loop[uv_layers].select:
+					if loop.uv_select_vert:
 						verts.add(loop.vert)
 	else:
 		for loop in selected:
@@ -350,15 +390,15 @@ def get_selected_uv_faces(bm, uv_layers, rtype: 'list | set | iter' = list):
 	if rtype is list:
 		if sync:
 			return [f for f in bm.faces if f.select]
-		return [f for f in bm.faces if all(l[uv_layers].select for l in f.loops) and f.select]
+		return [f for f in bm.faces if all(l.uv_select_vert for l in f.loops) and f.select]
 	if rtype is set:
 		if sync:
 			return {f for f in bm.faces if f.select}
-		return {f for f in bm.faces if all(l[uv_layers].select for l in f.loops) and f.select}
+		return {f for f in bm.faces if all(l.uv_select_vert for l in f.loops) and f.select}
 	if rtype is iter:
 		if sync:
 			return (f for f in bm.faces if f.select)
-		return (f for f in bm.faces if all(l[uv_layers].select for l in f.loops) and f.select)
+		return (f for f in bm.faces if all(l.uv_select_vert for l in f.loops) and f.select)
 
 	raise NotImplementedError(f'{rtype} is an invalid keyword argument for get_selected_uv_faces(), expect: list, set, iter')
 
@@ -416,7 +456,7 @@ def get_selected_islands(bm, uv_layers, selected=True, extend_selection_to_islan
 		else:
 			for face in faces:
 				if face.select:
-					face.tag = all(l[uv_layers].select for l in face.loops)
+					face.tag = all(l.uv_select_vert for l in face.loops)
 					continue
 				face.tag = False
 	else:
@@ -476,7 +516,7 @@ def get_selected_islands(bm, uv_layers, selected=True, extend_selection_to_islan
 					continue
 			else:
 				for face in island:
-					if all(l[uv_layers].select for l in face.loops):
+					if all(l.uv_select_vert for l in face.loops):
 						break
 				else:
 					island = set()
@@ -487,19 +527,58 @@ def get_selected_islands(bm, uv_layers, selected=True, extend_selection_to_islan
 	return islands
 
 
-def getFacesIslands(bm, uv_layers, faces, islands, disordered_island_faces):
-	for face in faces:
-		if face in disordered_island_faces:
-			bpy.ops.uv.select_all(action='DESELECT')
-			face.loops[0][uv_layers].select = True
-			bpy.ops.uv.select_linked()
+def _flood_fill_uv_islands(bm, uv_layers, eligible_faces):
+	"""Group `eligible_faces` into UV-connected islands using pure UV
+	topology (shared coordinates across linked radial loops) - no selection
+	state involved anywhere, so this works identically whether UV Sync
+	Selection is on or off, and doesn't disturb the user's selection.
 
-			islandFaces = {f for f in disordered_island_faces if f.loops[0][uv_layers].select}
-			disordered_island_faces.difference_update(islandFaces)
+	Faces outside `eligible_faces` are never included, even if they are
+	part of the same real UV island - matching the old select-and-filter
+	behavior of only covering the given candidate pool.
+	"""
+	eligible_faces = set(eligible_faces)
+	for face in bm.faces:
+		face.tag = False
+	for face in eligible_faces:
+		face.tag = True
 
-			islands.append(islandFaces)
-			if not disordered_island_faces:
-				break
+	islands = []
+	island = set()
+	for face in eligible_faces:
+		if not face.tag:
+			continue
+
+		# Tag first element in island (don't add again)
+		face.tag = False
+
+		parts_of_island = [face]
+		temp = []
+
+		while parts_of_island:
+			for f in parts_of_island:
+				for l in f.loops:
+					link_face = l.link_loop_radial_next.face
+					if not link_face.tag:
+						continue
+
+					for ll in link_face.loops:
+						if not ll.face.tag:
+							continue
+						if ll[uv_layers].uv != l[uv_layers].uv:
+							continue
+						if (l.link_loop_next[uv_layers].uv == ll.link_loop_prev[uv_layers].uv) or \
+							(ll.link_loop_next[uv_layers].uv == l.link_loop_prev[uv_layers].uv):
+							temp.append(ll.face)
+							ll.face.tag = False
+
+			island.update(parts_of_island)
+			parts_of_island = temp
+			temp = []
+
+		islands.append(island)
+		island = set()
+	return islands
 
 
 def getAllIslands(bm, uv_layers):
@@ -507,12 +586,7 @@ def getAllIslands(bm, uv_layers):
 	if not faces:
 		return []
 
-	islands = []
-	faces_unparsed = faces.copy()
-
-	getFacesIslands(bm, uv_layers, faces, islands, faces_unparsed)
-
-	return islands
+	return _flood_fill_uv_islands(bm, uv_layers, faces)
 
 
 def getSelectionIslands(bm, uv_layers, extend_selection_to_islands=False, selected_faces=None, need_faces_selected=True, restore_selected=True):
@@ -520,27 +594,22 @@ def getSelectionIslands(bm, uv_layers, extend_selection_to_islands=False, select
 		if need_faces_selected:
 			selected_faces = get_selected_uv_faces(bm, uv_layers, rtype=set)
 		else:
-			selected_faces = {f for f in bm.faces if any([l[uv_layers].select for l in f.loops]) and f.select}
+			selected_faces = {f for f in bm.faces if any([l.uv_select_vert for l in f.loops]) and f.select}
 	if not selected_faces:
 		return []
 
-	# Select islands
 	if extend_selection_to_islands:
-		bpy.ops.uv.select_linked()
-		disordered_island_faces = {f for f in bm.faces if f.loops[0][uv_layers].select and f.select}
+		# Extend each selected face to its full real UV island by computing
+		# islands across the whole mesh, then keeping the ones that
+		# intersect the selection - the topological equivalent of the old
+		# select_linked()-based expansion, without touching selection state.
+		all_islands = _flood_fill_uv_islands(bm, uv_layers, bm.faces)
+		islands = [isl for isl in all_islands if isl & selected_faces]
 	else:
-		disordered_island_faces = selected_faces.copy()
+		islands = _flood_fill_uv_islands(bm, uv_layers, selected_faces)
 
-	# Collect UV islands
-	islands = []
-
-	getFacesIslands(bm, uv_layers, selected_faces, islands, disordered_island_faces)
-
-	# Restore selection
-	if restore_selected:
-		bpy.ops.uv.select_all(action='DESELECT')
-		set_selected_faces(selected_faces, bm, uv_layers)
-	
+	# restore_selected is now a no-op kept for call-site compatibility:
+	# island detection here never touches selection, so there's nothing to restore.
 	return islands
 
 
@@ -548,60 +617,21 @@ def getSelectedUnselectedIslands(bm, uv_layers, selected_faces=None, target_face
 	if selected_faces is None:
 		return [], []
 
-	# Collect selected UV islands
-	selected_islands = []
-	bpy.ops.uv.select_linked()
-	disordered_islands_selected = {f for f in bm.faces if f.loops[0][uv_layers].select and f.select}
+	all_islands = _flood_fill_uv_islands(bm, uv_layers, bm.faces)
 
-	getFacesIslands(bm, uv_layers, selected_faces, selected_islands, disordered_islands_selected)
+	selected_islands = [isl for isl in all_islands if isl & selected_faces]
+	disordered_islands_selected = set()
+	for isl in selected_islands:
+		disordered_islands_selected.update(isl)
 
-	# Collect target UV islands
 	if target_faces is None:
 		return selected_islands, []
 
-	target_islands = []
 	target_faces.difference_update(disordered_islands_selected)
-	bpy.ops.uv.select_all(action='DESELECT')
-	for f in target_faces:
-		f.loops[0][uv_layers].select = True
-	bpy.ops.uv.select_linked()
-	disordered_islands_targets = {f for f in bm.faces if f.loops[0][uv_layers].select and f.select}
+	target_islands = [isl for isl in all_islands if isl & target_faces]
 
-	getFacesIslands(bm, uv_layers, target_faces, target_islands, disordered_islands_targets)
-
-	if restore_selected:
-		bpy.ops.uv.select_all(action='DESELECT')
-		set_selected_faces(selected_faces, bm, uv_layers)
-
+	# restore_selected is now a no-op kept for call-site compatibility.
 	return selected_islands, target_islands
-
-
-def getSelectionFacesIslands(bm, uv_layers, selected_faces_loops):
-	# Select islands
-	bpy.ops.uv.select_linked()
-	disordered_island_faces = {f for f in bm.faces if f.loops[0][uv_layers].select and f.select}
-
-	# Collect UV islands
-	selected_faces_islands = {}
-	to_remove = set()
-
-	for face in selected_faces_loops.keys():
-		if face not in disordered_island_faces:
-			to_remove.add(face)
-		else:
-			bpy.ops.uv.select_all(action='DESELECT')
-			face.loops[0][uv_layers].select = True
-			bpy.ops.uv.select_linked()
-
-			face_island = {f for f in disordered_island_faces if f.loops[0][uv_layers].select}
-			disordered_island_faces.difference_update(face_island)
-
-			selected_faces_islands.update({face: face_island})
-
-	for face in to_remove:
-		selected_faces_loops.pop(face)
-
-	return selected_faces_islands, selected_faces_loops
 
 
 def find_min_rotate_angle(angle):

@@ -40,6 +40,8 @@ def select_flipped(self):
 	for obj in selected_objs:
 		bm = bmesh.from_edit_mesh(obj.data)
 		uv_layer = bm.loops.layers.uv.verify()
+		if not sync:
+			utilities_uv.ensure_uv_selection_synced(bm)
 		for f in bm.faces:
 			area = 0.0
 			uvs = [l[uv_layer].uv for l in f.loops]
@@ -51,7 +53,9 @@ def select_flipped(self):
 					f.select_set(True)
 				else:
 					for l in f.loops:
-						l[uv_layer].select = True
+						l.uv_select_vert_set(True)
+		if not sync:
+			utilities_uv.flush_uv_selection(bm)
 
 	if not counter:
 		self.report({'INFO'}, 'Flipped faces not found')

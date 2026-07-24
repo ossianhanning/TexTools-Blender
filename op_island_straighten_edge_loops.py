@@ -30,9 +30,10 @@ class op(bpy.types.Operator):
 			return False
 		if not bpy.context.object.data.uv_layers:
 			return False
-		if bpy.context.scene.tool_settings.uv_select_mode != 'EDGE':
-			return False
 		if bpy.context.scene.tool_settings.use_uv_select_sync:
+			if not bpy.context.scene.tool_settings.mesh_select_mode[1]:
+				return False
+		elif bpy.context.scene.tool_settings.uv_select_mode != 'EDGE':
 			return False
 		return True
 
@@ -71,12 +72,14 @@ def main(self, context):
 
 def straighten(self, bm, uv_layers, island, segment_loops):
 	bpy.ops.uv.select_all(action='DESELECT')
+	utilities_uv.ensure_uv_selection_synced(bm)
 	bpy.ops.mesh.select_all(action='DESELECT')
 	for face in island:
 		face.select_set(True)
 		for loop in face.loops:
-			loop[uv_layers].select = True
-	
+			loop.uv_select_vert_set(True)
+	utilities_uv.flush_uv_selection(bm)
+
 	# Make edges of the island bounds seams temporarily for a more predictable result
 	bpy.ops.uv.seams_from_islands(mark_seams=True, mark_sharp=False)
 

@@ -153,10 +153,12 @@ def create_uv_mesh(self, context, obj, sk_create=True, bool_scale=True, delete_u
 
 	if restore_selected:	# For the Relax operator
 		bpy.ops.uv.select_all(action='DESELECT')
+		utilities_uv.ensure_uv_selection_synced(bm)
 		for faces in faces_by_island:
 			for face in faces:
 				for loop in face.loops:
-					loop[uv_layers].select = True
+					loop.uv_select_vert_set(True)
+		utilities_uv.flush_uv_selection(bm)
 
 	if mode == 'EDIT' and not restore_selected:
 		# Workaround for selection not flushing properly from loops to EDGE Selection Mode, apparently since UV edge selection support was added to the UV space

@@ -22,8 +22,6 @@ class op(bpy.types.Operator):
 			return False
 		if bpy.context.active_object.type != 'MESH':
 			return False
-		if context.scene.tool_settings.use_uv_select_sync:
-			return False
 		if not bpy.context.object.data.uv_layers:
 			return False
 		return True
@@ -38,7 +36,15 @@ def main(self, context):
 	uv_layers = bm.loops.layers.uv.verify()
 
 	op_select_islands_outline.select_outline(self, context)
-	selection = {loop for face in bm.faces if face.select for loop in face.loops if loop[uv_layers].select_edge}
+	utilities_uv.ensure_uv_selection_synced(bm)
+	sync = bpy.context.scene.tool_settings.use_uv_select_sync
+	if sync:
+		# Under sync, selecting only the boundary edges leaves face.select False
+		# for every face involved (a face is only "selected" once ALL its edges
+		# are) - loop.uv_select_edge alone is the correct, sync-safe signal here.
+		selection = {loop for face in bm.faces for loop in face.loops if loop.uv_select_edge}
+	else:
+		selection = {loop for face in bm.faces if face.select for loop in face.loops if loop.uv_select_edge}
 
 	if not selection:
 		return
@@ -63,16 +69,20 @@ def main(self, context):
 		del remaining_islands[0]
 		if remaining_islands:
 			bpy.ops.uv.select_all(action='DESELECT')
+			utilities_uv.ensure_uv_selection_synced(bm)
 			loop1 = next(iter(island)).loops[0]
-			loop1[uv_layers].select = True
+			loop1.uv_select_vert_set(True)
+			utilities_uv.flush_uv_selection(bm)
 			bpy.ops.uv.select_linked()
+			utilities_uv.ensure_uv_selection_synced(bm)
 
 			# Selection original coordinates
 			loop2 = loop1.link_loop_next
 			coords_before = loop1[uv_layers].uv.copy(), loop2[uv_layers].uv.copy()
 			# Stitch
 			op_select_islands_outline.select_outline(self, context)
-			selectionBorder = {loop for face in island for loop in face.loops if loop[uv_layers].select_edge}
+			utilities_uv.ensure_uv_selection_synced(bm)
+			selectionBorder = {loop for face in island for loop in face.loops if loop.uv_select_edge}
 			selectionBorder.intersection_update(extended_selection)
 
 			loopsByTarget = [[] for _ in range(len(remaining_islands))]
@@ -86,17 +96,21 @@ def main(self, context):
 
 			for grouped_loops in loopsByTarget:
 				bpy.ops.uv.select_all(action='DESELECT')
+				utilities_uv.ensure_uv_selection_synced(bm)
 				for base_loop in grouped_loops:
-					base_loop[uv_layers].select = True
-					base_loop[uv_layers].select_edge = True
+					base_loop.uv_select_vert_set(True)
+					base_loop.uv_select_edge_set(True)
 
+				utilities_uv.flush_uv_selection(bm)
 				bpy.ops.uv.stitch(use_limit=False, snap_islands=True, midpoint_snap=False, clear_seams=True, mode='EDGE')
 
 			# Relocate selection
 			coords_after = loop1[uv_layers].uv, loop2[uv_layers].uv
 			if coords_before != coords_after:
-				loop1[uv_layers].select = True
+				loop1.uv_select_vert_set(True)
+				utilities_uv.flush_uv_selection(bm)
 				bpy.ops.uv.select_linked()
+				utilities_uv.ensure_uv_selection_synced(bm)
 				new_island = utilities_uv.get_selected_uv_faces(bm, uv_layers)
 
 				V1 = coords_before[1] - coords_before[0]

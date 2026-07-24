@@ -37,6 +37,8 @@ class op(bpy.types.Operator):
 		for obj in selected_objs:
 			bm = bmesh.from_edit_mesh(obj.data)
 			uv_layer = bm.loops.layers.uv.verify()
+			if not sync:
+				utilities_uv.ensure_uv_selection_synced(bm)
 			if _is_island_mode:
 				islands = utilities_uv.get_selected_islands(bm, uv_layer, selected=True)
 				if not islands:
@@ -52,7 +54,7 @@ class op(bpy.types.Operator):
 				if sync:
 					corners = [luv for f in bm.faces if f.select for luv in f.loops]
 				else:
-					corners = [luv for f in bm.faces if f.select for luv in f.loops if luv[uv_layer].select]
+					corners = [luv for f in bm.faces if f.select for luv in f.loops if luv.uv_select_vert]
 				if not corners:
 					continue
 				if align_mode == 'SELECTION':

@@ -95,10 +95,12 @@ def swap(self, context, island_stats_source):
 				face.select_set(True)
 	else:
 		bpy.ops.uv.select_all(action='DESELECT')
+		utilities_uv.ensure_uv_selection_synced(bm)
 		for island in islands_equal:
 			for face in island:
 				for loop in face.loops:
-					loop[uv_layers].select = True
+					loop.uv_select_vert_set(True)
+		utilities_uv.flush_uv_selection(bm)
 
 
 	if sync:

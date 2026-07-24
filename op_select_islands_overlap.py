@@ -40,6 +40,8 @@ def deselect(self, context):
 	sync = bpy.context.scene.tool_settings.use_uv_select_sync
 	if sync:
 		selection_mode = tuple(bpy.context.scene.tool_settings.mesh_select_mode)
+	else:
+		utilities_uv.ensure_uv_selection_synced(bm)
 
 	islands = utilities_uv.get_selected_islands(bm, uv_layers)
 
@@ -51,7 +53,8 @@ def deselect(self, context):
 		else:
 			for face in islands[0]:
 				for loop in face.loops:
-					loop[uv_layers].select = False
+					loop.uv_select_vert_set(False)
+			utilities_uv.flush_uv_selection(bm)
 
 		utilities_uv.multi_object_loop_stop = True
 

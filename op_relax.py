@@ -28,8 +28,6 @@ class op(bpy.types.Operator):
 			return False
 		if not bpy.context.active_object.data.uv_layers:
 			return False
-		if context.scene.tool_settings.use_uv_select_sync:
-			return False
 		return True
 
 
@@ -111,10 +109,11 @@ def relax(self, context):
 	bm.faces.ensure_lookup_table()
 	bm.verts.ensure_lookup_table()
 	uv_layers = bm.loops.layers.uv.verify()
+	utilities_uv.ensure_uv_selection_synced(bm)
 
 	for face_index in copied_uvs:
 		for i, loop in enumerate(bm.faces[face_index].loops):
-			if loop[uv_layers].select:
+			if loop.uv_select_vert:
 				loop[uv_layers].uv = copied_uvs[face_index][i]
 
 	# Remove temporary mesh and restore selection mode altered by meshtex_create

@@ -28,8 +28,6 @@ class op(bpy.types.Operator):
 			return False
 		if not bpy.context.active_object.data.uv_layers:
 			return False
-		if context.scene.tool_settings.use_uv_select_sync:
-			return False
 		return True
 
 
@@ -53,6 +51,7 @@ def rectify(self, context, me=None, bm=None, uv_layers=None):
 
 	for island in islands:
 		bpy.ops.uv.select_all(action='DESELECT')
+		utilities_uv.ensure_uv_selection_synced(bm)
 		utilities_uv.set_selected_faces(island, bm, uv_layers)
 		main(me, bm, uv_layers, island, faces_loops)
 	

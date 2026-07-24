@@ -26,8 +26,6 @@ class op(bpy.types.Operator):
 			return False
 		if not bpy.context.object.data.uv_layers:
 			return False
-		if bpy.context.scene.tool_settings.use_uv_select_sync:
-			return False
 		return True
 
 	def execute(self, context):
@@ -41,13 +39,22 @@ def main(self, axis):
 	for obj in selected_obj:
 		bm = bmesh.from_edit_mesh(obj.data)
 		uv_layer = bm.loops.layers.uv.verify()
+		utilities_uv.ensure_uv_selection_synced(bm)
+		sync = bpy.context.scene.tool_settings.use_uv_select_sync
 		# selection_store
-		sel_states = [(loop[uv_layer].select, loop[uv_layer].select_edge) for face in bm.faces for loop in face.loops]
+		sel_states = [(loop.uv_select_vert, loop.uv_select_edge) for face in bm.faces for loop in face.loops]
+		# Per-loop selection restore doesn't reliably propagate to mesh
+		# vert/edge selection under UV Sync Selection (selection there is
+		# owned by the mesh, not per-loop), so capture the mesh-level state
+		# too and restore that instead when synced.
+		mesh_sel = None
+		if sync:
+			mesh_sel = ([v.select for v in bm.verts], [e.select for e in bm.edges], [f.select for f in bm.faces])
 
 		# analyze if a full uv-island has been selected.
 		full_islands = []
 		for island in utilities_uv.get_selected_islands(bm, uv_layer, selected=False, extend_selection_to_islands=True):
-			if all(loop[uv_layer].select for face in island for loop in face.loops):
+			if all(loop.uv_select_vert for face in island for loop in face.loops):
 				full_islands.append(list(island))
 
 		# store pins and edge seams
@@ -63,7 +70,7 @@ def main(self, axis):
 			for loop in face.loops:
 				uv = loop[uv_layer]
 				pin_state.append(uv.pin_uv)
-				uv.pin_uv = not uv.select
+				uv.pin_uv = not loop.uv_select_vert
 				if axis:
 					uv_coords.append(uv.uv.copy())
 
@@ -90,7 +97,7 @@ def main(self, axis):
 
 				orient_uvs.append((x_min, x_max, y_min, y_max, x_min.uv.copy(), x_max.uv.copy(), y_min.uv.copy(), y_max.uv.copy()))
 
-		groups.append((bm, uv_layer, sel_states, full_islands, edge_seam, pin_state, uv_coords, orient_uvs))
+		groups.append((bm, uv_layer, sel_states, full_islands, edge_seam, pin_state, uv_coords, orient_uvs, mesh_sel))
 
 	# apply unwrap
 	bpy.ops.uv.select_all(action='SELECT')
@@ -101,7 +108,7 @@ def main(self, axis):
 
 	# try to reconstruct the original orientation of the uv island
 	up = Vector((0, 1.0))
-	for bm, uv_layer, sel_states, full_islands, edge_seam, pin_state, uv_coords, orient_uvs in groups:
+	for bm, uv_layer, sel_states, full_islands, edge_seam, pin_state, uv_coords, orient_uvs, mesh_sel in groups:
 		for bbox, island in zip(orient_uvs, full_islands):
 			x_min, x_max, y_min, y_max, x_min_coord, x_max_coord, y_min_coord, y_max_coord = bbox
 			prev_bbox = BBox(x_min_coord.x, x_max_coord.x, y_min_coord.y, y_max_coord.y)
@@ -196,9 +203,20 @@ def main(self, axis):
 			edge.seam = seam
 
 		# restore selection
-		luvs = (loop[uv_layer] for face in bm.faces for loop in face.loops)
-		for luv, sel_state in zip(luvs, sel_states):
-			luv.select, luv.select_edge = sel_state
+		if mesh_sel is not None:
+			vert_sel, edge_sel, face_sel = mesh_sel
+			for v, s in zip(bm.verts, vert_sel):
+				v.select = s
+			for e, s in zip(bm.edges, edge_sel):
+				e.select = s
+			for f, s in zip(bm.faces, face_sel):
+				f.select = s
+		else:
+			loops = (loop for face in bm.faces for loop in face.loops)
+			for loop, sel_state in zip(loops, sel_states):
+				loop.uv_select_vert_set(sel_state[0])
+				loop.uv_select_edge_set(sel_state[1])
+			utilities_uv.flush_uv_selection(bm)
 
 	for obj in selected_obj:
 		bmesh.update_edit_mesh(obj.data)

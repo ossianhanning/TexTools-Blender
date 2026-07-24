@@ -40,6 +40,8 @@ def select_zero(self):
 	for obj in utilities_uv.selected_unique_objects_in_mode_with_uv():
 		bm = bmesh.from_edit_mesh(obj.data)
 		uv_layer = bm.loops.layers.uv.verify()
+		if not sync:
+			utilities_uv.ensure_uv_selection_synced(bm)
 		for f in bm.faces:
 			for l in f.loops:
 				l1 = l[uv_layer].uv
@@ -52,11 +54,13 @@ def select_zero(self):
 						f.select_set(True)
 					else:
 						for i in f.loops:
-							i[uv_layer].select = True
+							i.uv_select_vert_set(True)
 					counter += 1
 					break
 				elif len(f.loops) == 3:
 					break
+		if not sync:
+			utilities_uv.flush_uv_selection(bm)
 
 	if not counter:
 		self.report({'INFO'}, f'Degenerate triangles not found')
